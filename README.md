@@ -88,7 +88,7 @@ Request: `multipart/form-data`
 Example:
 
 ```bash
-curl -X POST https://YOUR_DOMAIN/api/compress-file \
+curl --fail-with-body -X POST https://YOUR_DOMAIN/api/compress-file \
   -F "pdf=@input.pdf" \
   -F "dpi=50" \
   --output output.pdf
@@ -102,4 +102,4 @@ Response:
 - `X-MadPDF-Original-Bytes`
 - `X-MadPDF-Compressed-Bytes`
 
-Note: this endpoint runs inside Vercel Serverless. Large files may hit Vercel body/time/memory limits. Browser-side compression remains the safest path for near-150MB PDFs.
+Note: this endpoint runs inside Vercel Serverless. It is intentionally capped to 20MB for binary API calls and DPI <= 150 for files above 8MB. Browser-side compression remains the supported path for near-150MB PDFs. For large API workloads, use a dedicated Ghostscript/container worker outside Vercel.

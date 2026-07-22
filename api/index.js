@@ -9,6 +9,8 @@ const { SUPPORTED_LOCALES, serverText, resolveLocale } = require('../lib/i18n');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const MAX_FILE_SIZE = 150 * 1024 * 1024;
+const API_RASTER_MAX_FILE_SIZE = 20 * 1024 * 1024;
+const API_RASTER_MAX_DPI_FOR_LARGE_FILES = 150;
 
 function sendJson(res, status, payload) {
   res.statusCode = status;
@@ -60,7 +62,34 @@ module.exports = async function handler(req, res) {
       const inputBuffer = await fsp.readFile(file.filepath);
       await fsp.unlink(file.filepath).catch(() => {});
       const dpi = Array.isArray(fields.dpi) ? fields.dpi[0] : fields.dpi;
-      const output = await rasterCompressPdf(inputBuffer, dpi);
+      const numericDpi = Math.max(10, Math.min(300, Number.parseInt(dpi || '72', 10) || 72));
+      if (inputBuffer.length > API_RASTER_MAX_FILE_SIZE) {
+        res.statusCode = 413;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('X-MadPDF-Error', 'FILE_TOO_LARGE_FOR_SERVERLESS_API');
+        res.end(JSON.stringify({
+          ok: false,
+          code: 'FILE_TOO_LARGE_FOR_SERVERLESS_API',
+          error: 'This binary API runs on Vercel Serverless and cannot reliably raster-compress PDFs above 20MB. Use the web client for large files up to 150MB, or deploy a dedicated Ghostscript/container worker for large API workloads.',
+          maxApiBytes: API_RASTER_MAX_FILE_SIZE,
+          receivedBytes: inputBuffer.length
+        }));
+        return;
+      }
+      if (inputBuffer.length > 8 * 1024 * 1024 && numericDpi > API_RASTER_MAX_DPI_FOR_LARGE_FILES) {
+        res.statusCode = 422;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('X-MadPDF-Error', 'DPI_TOO_HIGH_FOR_SERVERLESS_API');
+        res.end(JSON.stringify({
+          ok: false,
+          code: 'DPI_TOO_HIGH_FOR_SERVERLESS_API',
+          error: 'For files above 8MB, the serverless binary API only supports DPI <= 150. Use the web client for heavier jobs.',
+          maxDpi: API_RASTER_MAX_DPI_FOR_LARGE_FILES,
+          receivedDpi: numericDpi
+        }));
+        return;
+      }
+      const output = await rasterCompressPdf(inputBuffer, numericDpi);
       const safeName = sanitizeDownloadName(originalName).replace(/\.pdf$/i, '') + `-compressed-${output.dpi}dpi.pdf`;
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/pdf');
@@ -100,6 +129,13 @@ module.exports = async function handler(req, res) {
     res.end(renderPage({ locale: url.searchParams.get('lang') || url.searchParams.get('locale') }));
   } catch (error) {
     const locale = resolveLocale(new URL(req.url, 'http://localhost').searchParams.get('lang'));
+    if ((req.url || '').startsWith('/api/compress-file')) {
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('X-MadPDF-Error', 'COMPRESS_FILE_FAILED');
+      res.end(JSON.stringify({ ok: false, error: String(error.message || error), code: 'COMPRESS_FILE_FAILED' }));
+      return;
+    }
     if ((req.url || '').startsWith('/api/')) return sendJson(res, 500, { ok: false, error: serverText(locale, 'compressFailed'), code: 'COMPRESS_FAILED', detail: process.env.NODE_ENV === 'development' ? String(error.message || error) : undefined });
     res.statusCode = 500; res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.end(renderPage({ locale, error: serverText(locale, 'compressFailed') }));
   }
