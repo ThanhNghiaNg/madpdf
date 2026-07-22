@@ -47,13 +47,13 @@ function canvasToBlob(canvas, type, quality) {
 
 async function optimizePdfInBrowser(file, dpi) {
   if (!window.PDFLib?.PDFDocument || !window.pdfjsLib) throw new Error('CLIENT_ENGINE_MISSING');
-  const targetDpi = Math.max(1, Math.min(300, Number(dpi) || 1));
+  const targetDpi = Math.max(10, Math.min(300, Number(dpi) || 10));
   const quality = jpegQualityForDpi(targetDpi);
   setProgress(5, t('compressing'), 'Reading PDF in browser...');
   const inputBytes = new Uint8Array(await file.arrayBuffer());
 
   window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-  const loadingTask = window.pdfjsLib.getDocument({ data: inputBytes, useWorkerFetch: true, isEvalSupported: false, disableFontFace: false });
+  const loadingTask = window.pdfjsLib.getDocument({ data: inputBytes.slice(), useWorkerFetch: true, isEvalSupported: false, disableFontFace: true, stopAtErrors: false });
   const srcPdf = await loadingTask.promise;
   const outPdf = await window.PDFLib.PDFDocument.create();
   outPdf.setProducer('MadPDF v3 raster DPI compressor');
@@ -65,7 +65,7 @@ async function optimizePdfInBrowser(file, dpi) {
     const scale = targetDpi / 72;
     const viewport = page.getViewport({ scale });
     const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d', { alpha: false });
+    const context = canvas.getContext('2d', { alpha: false, willReadFrequently: false });
     canvas.width = Math.max(1, Math.floor(viewport.width));
     canvas.height = Math.max(1, Math.floor(viewport.height));
     context.fillStyle = '#fff';
@@ -73,7 +73,8 @@ async function optimizePdfInBrowser(file, dpi) {
     setProgress(8 + ((pageNum - 1) / srcPdf.numPages) * 82, t('compressing'), `Rasterizing page ${pageNum}/${srcPdf.numPages} at ${targetDpi} DPI...`);
     await page.render({ canvasContext: context, viewport }).promise;
     const jpegBlob = await canvasToBlob(canvas, 'image/jpeg', quality);
-    const jpegBytes = new Uint8Array(await jpegBlob.arrayBuffer());
+    if (!jpegBlob || jpegBlob.size < 100) throw new Error(`Failed to encode page ${pageNum}`);
+    const jpegBytes = await jpegBlob.arrayBuffer();
     const jpg = await outPdf.embedJpg(jpegBytes);
     const outPage = outPdf.addPage([baseViewport.width, baseViewport.height]);
     outPage.drawImage(jpg, { x: 0, y: 0, width: baseViewport.width, height: baseViewport.height });
@@ -83,22 +84,26 @@ async function optimizePdfInBrowser(file, dpi) {
 
   setProgress(92, t('compressing'), 'Saving compressed PDF...');
   const outputBytes = await outPdf.save({ useObjectStreams: true, addDefaultPage: false, objectsPerTick: 20 });
-  const output = outputBytes.byteLength < inputBytes.byteLength ? outputBytes : inputBytes;
-  const savedBytes = Math.max(0, inputBytes.byteLength - output.byteLength);
-  const savedPercent = inputBytes.byteLength ? Number(((savedBytes / inputBytes.byteLength) * 100).toFixed(1)) : 0;
+  if (!outputBytes || outputBytes.length < 1024) throw new Error('Compression produced an invalid empty PDF. Try higher DPI.');
+  const outputBuffer = outputBytes.buffer.slice(outputBytes.byteOffset, outputBytes.byteOffset + outputBytes.byteLength);
+  const inputBuffer = inputBytes.buffer.slice(inputBytes.byteOffset, inputBytes.byteOffset + inputBytes.byteLength);
+  const outputBlob = new Blob([outputBuffer], { type: 'application/pdf' });
+  const inputBlob = new Blob([inputBuffer], { type: 'application/pdf' });
+  const blob = outputBlob.size > 1024 && outputBlob.size < inputBlob.size ? outputBlob : inputBlob;
+  const savedBytes = Math.max(0, inputBlob.size - blob.size);
+  const savedPercent = inputBlob.size ? Number(((savedBytes / inputBlob.size) * 100).toFixed(1)) : 0;
   const originalName = sanitizePdfName(file.name);
-  const blob = new Blob([output], { type: 'application/pdf' });
   const objectUrl = URL.createObjectURL(blob);
   return {
     fileName: originalName.replace(/\.pdf$/i, '') + `-madpdf-v3-${targetDpi}dpi.pdf`,
     originalName,
     dpi: targetDpi,
-    originalBytes: inputBytes.byteLength,
-    compressedBytes: output.byteLength,
+    originalBytes: inputBlob.size,
+    compressedBytes: blob.size,
     savedBytes,
     savedPercent,
-    originalSize: formatBytes(inputBytes.byteLength),
-    compressedSize: formatBytes(output.byteLength),
+    originalSize: formatBytes(inputBlob.size),
+    compressedSize: formatBytes(blob.size),
     savedSize: formatBytes(savedBytes),
     downloadUrl: objectUrl,
     _objectUrl: objectUrl
