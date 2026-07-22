@@ -53,7 +53,7 @@ async function optimizePdfInBrowser(file, dpi) {
   const inputBytes = new Uint8Array(await file.arrayBuffer());
 
   window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-  const loadingTask = window.pdfjsLib.getDocument({ data: inputBytes.slice(), useWorkerFetch: true, isEvalSupported: false, disableFontFace: true, stopAtErrors: false });
+  const loadingTask = window.pdfjsLib.getDocument({ data: inputBytes.slice(), useWorkerFetch: true, isEvalSupported: false, disableFontFace: false, useSystemFonts: true, stopAtErrors: false });
   const srcPdf = await loadingTask.promise;
   const outPdf = await window.PDFLib.PDFDocument.create();
   outPdf.setProducer('MadPDF v3 raster DPI compressor');
@@ -71,7 +71,8 @@ async function optimizePdfInBrowser(file, dpi) {
     context.fillStyle = '#fff';
     context.fillRect(0, 0, canvas.width, canvas.height);
     setProgress(8 + ((pageNum - 1) / srcPdf.numPages) * 82, t('compressing'), `Rasterizing page ${pageNum}/${srcPdf.numPages} at ${targetDpi} DPI...`);
-    await page.render({ canvasContext: context, viewport }).promise;
+    const renderTask = page.render({ canvasContext: context, viewport, intent: 'print', background: 'white' });
+    await renderTask.promise;
     const jpegBlob = await canvasToBlob(canvas, 'image/jpeg', quality);
     if (!jpegBlob || jpegBlob.size < 100) throw new Error(`Failed to encode page ${pageNum}`);
     const jpegBytes = await jpegBlob.arrayBuffer();
