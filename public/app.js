@@ -29,15 +29,60 @@ function sanitizePdfName(name) {
   return clean.toLowerCase().endsWith('.pdf') ? clean : `${clean}.pdf`;
 }
 
+function jpegQualityForDpi(dpi) {
+  if (dpi <= 30) return 0.42;
+  if (dpi <= 50) return 0.50;
+  if (dpi <= 72) return 0.58;
+  if (dpi <= 100) return 0.66;
+  if (dpi <= 150) return 0.74;
+  if (dpi <= 220) return 0.82;
+  return 0.88;
+}
+
+function canvasToBlob(canvas, type, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('CANVAS_EXPORT_FAILED')), type, quality);
+  });
+}
+
 async function optimizePdfInBrowser(file, dpi) {
-  if (!window.PDFLib?.PDFDocument) throw new Error('CLIENT_ENGINE_MISSING');
-  setProgress(8, t('compressing'), 'Reading PDF in browser...');
+  if (!window.PDFLib?.PDFDocument || !window.pdfjsLib) throw new Error('CLIENT_ENGINE_MISSING');
+  const targetDpi = Math.max(1, Math.min(300, Number(dpi) || 1));
+  const quality = jpegQualityForDpi(targetDpi);
+  setProgress(5, t('compressing'), 'Reading PDF in browser...');
   const inputBytes = new Uint8Array(await file.arrayBuffer());
-  setProgress(25, t('compressing'), 'Rewriting PDF object streams...');
-  const pdfDoc = await window.PDFLib.PDFDocument.load(inputBytes, { ignoreEncryption: false, updateMetadata: false });
-  pdfDoc.setTitle(''); pdfDoc.setAuthor(''); pdfDoc.setSubject(''); pdfDoc.setKeywords([]); pdfDoc.setProducer('MadPDF v3'); pdfDoc.setCreator('MadPDF v3');
-  setProgress(65, t('compressing'), 'Saving optimized PDF...');
-  const outputBytes = await pdfDoc.save({ useObjectStreams: true, addDefaultPage: false, objectsPerTick: 50 });
+
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const loadingTask = window.pdfjsLib.getDocument({ data: inputBytes, useWorkerFetch: true, isEvalSupported: false, disableFontFace: false });
+  const srcPdf = await loadingTask.promise;
+  const outPdf = await window.PDFLib.PDFDocument.create();
+  outPdf.setProducer('MadPDF v3 raster DPI compressor');
+  outPdf.setCreator('MadPDF v3');
+
+  for (let pageNum = 1; pageNum <= srcPdf.numPages; pageNum += 1) {
+    const page = await srcPdf.getPage(pageNum);
+    const baseViewport = page.getViewport({ scale: 1 });
+    const scale = targetDpi / 72;
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d', { alpha: false });
+    canvas.width = Math.max(1, Math.floor(viewport.width));
+    canvas.height = Math.max(1, Math.floor(viewport.height));
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    setProgress(8 + ((pageNum - 1) / srcPdf.numPages) * 82, t('compressing'), `Rasterizing page ${pageNum}/${srcPdf.numPages} at ${targetDpi} DPI...`);
+    await page.render({ canvasContext: context, viewport }).promise;
+    const jpegBlob = await canvasToBlob(canvas, 'image/jpeg', quality);
+    const jpegBytes = new Uint8Array(await jpegBlob.arrayBuffer());
+    const jpg = await outPdf.embedJpg(jpegBytes);
+    const outPage = outPdf.addPage([baseViewport.width, baseViewport.height]);
+    outPage.drawImage(jpg, { x: 0, y: 0, width: baseViewport.width, height: baseViewport.height });
+    canvas.width = 1; canvas.height = 1;
+    page.cleanup?.();
+  }
+
+  setProgress(92, t('compressing'), 'Saving compressed PDF...');
+  const outputBytes = await outPdf.save({ useObjectStreams: true, addDefaultPage: false, objectsPerTick: 20 });
   const output = outputBytes.byteLength < inputBytes.byteLength ? outputBytes : inputBytes;
   const savedBytes = Math.max(0, inputBytes.byteLength - output.byteLength);
   const savedPercent = inputBytes.byteLength ? Number(((savedBytes / inputBytes.byteLength) * 100).toFixed(1)) : 0;
@@ -45,9 +90,9 @@ async function optimizePdfInBrowser(file, dpi) {
   const blob = new Blob([output], { type: 'application/pdf' });
   const objectUrl = URL.createObjectURL(blob);
   return {
-    fileName: originalName.replace(/\.pdf$/i, '') + '-madpdf-v3.pdf',
+    fileName: originalName.replace(/\.pdf$/i, '') + `-madpdf-v3-${targetDpi}dpi.pdf`,
     originalName,
-    dpi,
+    dpi: targetDpi,
     originalBytes: inputBytes.byteLength,
     compressedBytes: output.byteLength,
     savedBytes,
@@ -71,7 +116,7 @@ const defaultTranslations = {
     languageLabel: 'Language',
     brand: 'MadPDF',
     heroTitle: 'Compress PDF fully on Vercel',
-    heroSubtitle: 'Hybrid client/server PDF optimization. Files up to 150MB stay Vercel-deployable.',
+    heroSubtitle: 'Compress by rasterizing each page at target DPI in your browser. Files up to 150MB stay Vercel-deployable.',
     gsTitle: 'Ghostscript is missing',
     gsBody: 'The PDF compression engine uses Ghostscript. Install it on the server first to start processing.',
     errorTitle: 'Error',
@@ -83,7 +128,7 @@ const defaultTranslations = {
     dropSubtitle: 'or click to choose a file',
     noFile: 'No file selected',
     dpiLabel: 'DPI (0 - 300)',
-    dpiHint: 'V3 uses serverless-safe PDF optimization. DPI is kept for compatibility.',
+    dpiHint: 'Lower DPI rasterizes pages smaller. Very low DPI = smaller file, lower quality.',
     compressButton: 'Compress PDF',
     helper: 'After processing, your download link will appear here.',
     uploading: 'Processing...',
