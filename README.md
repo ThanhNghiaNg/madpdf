@@ -73,3 +73,33 @@ public/app.js      client-side optimizer + UI logic
 public/*           UI assets/locales/styles
 vercel.json        Vercel routing/function config
 ```
+
+## Public binary API
+
+### `POST /api/compress-file`
+
+Receives a PDF and DPI, returns the compressed PDF bytes directly.
+
+Request: `multipart/form-data`
+
+- `pdf`: input PDF file
+- `dpi`: target DPI, clamped to `10..300`
+
+Example:
+
+```bash
+curl -X POST https://YOUR_DOMAIN/api/compress-file \
+  -F "pdf=@input.pdf" \
+  -F "dpi=50" \
+  --output output.pdf
+```
+
+Response:
+
+- `Content-Type: application/pdf`
+- `Content-Disposition: attachment; filename="...-compressed-50dpi.pdf"`
+- `X-MadPDF-DPI`
+- `X-MadPDF-Original-Bytes`
+- `X-MadPDF-Compressed-Bytes`
+
+Note: this endpoint runs inside Vercel Serverless. Large files may hit Vercel body/time/memory limits. Browser-side compression remains the safest path for near-150MB PDFs.

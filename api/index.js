@@ -4,6 +4,7 @@ const fsp = require('fs/promises');
 const { IncomingForm } = require('formidable');
 const ffmpegPath = require('ffmpeg-static');
 const { optimizePdf, sanitizeDownloadName, normalizeUploadedFileName } = require('../lib/pdf');
+const { rasterCompressPdf } = require('../lib/raster-compress');
 const { SUPPORTED_LOCALES, serverText, resolveLocale } = require('../lib/i18n');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -48,6 +49,30 @@ module.exports = async function handler(req, res) {
   const pathname = url.pathname;
   try {
     if (req.method === 'GET' && pathname === '/api/status') return sendJson(res, 200, { ok: true, gsReady: true, ffmpegReady: !!ffmpegPath && fs.existsSync(ffmpegPath), ffmpegPath: !!ffmpegPath, locale: resolveLocale(url.searchParams.get('locale') || url.searchParams.get('lang')) });
+    if (req.method === 'POST' && pathname === '/api/compress-file') {
+      const locale = resolveLocale(url.searchParams.get('lang'));
+      const { fields, file } = await readBodyFile(req);
+      const fieldLocale = Array.isArray(fields.locale) ? fields.locale[0] : fields.locale;
+      const lang = resolveLocale(fieldLocale || locale);
+      if (!file) return sendJson(res, 400, { ok: false, error: serverText(lang, 'fileRequired'), code: 'FILE_REQUIRED' });
+      const originalName = normalizeUploadedFileName(file.originalFilename || 'download.pdf');
+      if (file.mimetype !== 'application/pdf' && !originalName.toLowerCase().endsWith('.pdf')) return sendJson(res, 400, { ok: false, error: serverText(lang, 'pdfOnlyError'), code: 'PDF_ONLY' });
+      const inputBuffer = await fsp.readFile(file.filepath);
+      await fsp.unlink(file.filepath).catch(() => {});
+      const dpi = Array.isArray(fields.dpi) ? fields.dpi[0] : fields.dpi;
+      const output = await rasterCompressPdf(inputBuffer, dpi);
+      const safeName = sanitizeDownloadName(originalName).replace(/\.pdf$/i, '') + `-compressed-${output.dpi}dpi.pdf`;
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Length', String(output.buffer.length));
+      res.setHeader('Content-Disposition', buildContentDisposition(safeName));
+      res.setHeader('X-MadPDF-DPI', String(output.dpi));
+      res.setHeader('X-MadPDF-Original-Bytes', String(inputBuffer.length));
+      res.setHeader('X-MadPDF-Compressed-Bytes', String(output.buffer.length));
+      res.end(output.buffer);
+      return;
+    }
+
     if (req.method === 'POST' && (pathname === '/api/compress' || pathname === '/compress')) {
       const locale = resolveLocale(url.searchParams.get('lang'));
       const { fields, file } = await readBodyFile(req);

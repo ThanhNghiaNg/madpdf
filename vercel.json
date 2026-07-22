@@ -4,7 +4,7 @@
     "api/**/*.js": {
       "maxDuration": 60,
       "memory": 1024,
-      "includeFiles": "node_modules/ffmpeg-static/ffmpeg"
+      "includeFiles": "node_modules/ffmpeg-static/ffmpeg,node_modules/@napi-rs/canvas-*/**"
     }
   },
   "routes": [
